@@ -16,7 +16,7 @@ import {
 } from 'lucide-react'
 import { useChatHistory, type ChatMessage } from './use-chat-history'
 import { parseExcalidrawElements, type ParsedElement } from './element-parser'
-import { streamChat, isConfigValid, getAIConfig } from '@/lib/ai'
+import { streamChat, isConfigValid, getAIConfig, type ToolExecutor } from '@/lib/ai'
 import type { ExcalidrawWrapperRef } from './wrapper'
 
 interface ChatPanelProps {
@@ -157,6 +157,12 @@ export function ChatPanel({ className, onElementsGenerated, excalidrawRef }: Cha
     // 获取选中的元素（如果有）
     const selectedElements = excalidrawRef?.current?.getSelectedElementsSummary() || []
 
+    // 创建工具执行器
+    const toolExecutor: ToolExecutor = {
+      getCanvasElements: () => excalidrawRef?.current?.getCanvasState() || [],
+      deleteElements: (ids: string[]) => excalidrawRef?.current?.deleteElements(ids) || { deleted: [], notFound: ids }
+    }
+
     await streamChat(
       userMessage,
       (chunk) => {
@@ -175,7 +181,8 @@ export function ChatPanel({ className, onElementsGenerated, excalidrawRef }: Cha
         updateMessage(sessionId!, assistantMessageId, `抱歉，发生了错误：${error.message}`)
       },
       undefined,
-      selectedElements // 传递选中的元素
+      selectedElements, // 传递选中的元素
+      toolExecutor // 传递工具执行器
     )
 
     // 最终解析

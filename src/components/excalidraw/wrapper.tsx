@@ -27,6 +27,12 @@ export interface ExcalidrawWrapperRef {
   getSelectedElements: () => ExcalidrawElement[]
   getCanvasState: () => ElementSummary[]
   getSelectedElementsSummary: () => ElementSummary[]
+  /**
+   * 删除指定 id 的元素
+   * @param ids 要删除的元素 id 数组
+   * @returns 删除结果：deleted 为成功删除的 id，notFound 为未找到的 id
+   */
+  deleteElements: (ids: string[]) => { deleted: string[], notFound: string[] }
   /** 
    * 切换到指定会话的画布（会自动保存当前画布）
    * @param sessionId 目标会话 ID
@@ -230,6 +236,48 @@ export const ExcalidrawWrapper = forwardRef<ExcalidrawWrapperRef, ExcalidrawWrap
         // 清除当前会话的画布数据
         const storageKey = getStorageKey(currentSessionIdRef.current, currentUseIndependentCanvasRef.current)
         localStorage.removeItem(storageKey)
+      },
+      deleteElements: (ids: string[]) => {
+        const api = excalidrawAPIRef.current
+        if (!api) return { deleted: [], notFound: ids }
+
+        const currentElements = api.getSceneElements()
+        const existingIds = new Set(currentElements.map((el: ExcalidrawElement) => el.id))
+        
+        // 分类：存在的和不存在的
+        const toDelete = new Set<string>()
+        const notFound: string[] = []
+        
+        for (const id of ids) {
+          if (existingIds.has(id)) {
+            toDelete.add(id)
+          } else {
+            notFound.push(id)
+          }
+        }
+        
+        // 查找需要级联删除的绑定元素（如删除形状时自动删除其中的文字）
+        for (const el of currentElements) {
+          if (toDelete.has(el.id) && el.boundElements && Array.isArray(el.boundElements)) {
+            for (const bound of el.boundElements) {
+              if (existingIds.has(bound.id)) {
+                toDelete.add(bound.id)
+              }
+            }
+          }
+        }
+        
+        // 过滤掉要删除的元素
+        const remainingElements = currentElements.filter(
+          (el: ExcalidrawElement) => !toDelete.has(el.id)
+        )
+        
+        api.updateScene({ elements: remainingElements })
+        
+        return { 
+          deleted: Array.from(toDelete), 
+          notFound 
+        }
       },
       getElements: () => {
         const api = excalidrawAPIRef.current

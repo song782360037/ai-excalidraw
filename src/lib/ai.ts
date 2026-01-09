@@ -8,9 +8,64 @@ export interface AIConfig {
 }
 
 export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant'
+  role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
+  tool_calls?: ToolCall[]
+  tool_call_id?: string
 }
+
+export interface ToolCall {
+  id: string
+  type: 'function'
+  function: {
+    name: string
+    arguments: string
+  }
+}
+
+/**
+ * 工具执行器接口
+ */
+export interface ToolExecutor {
+  getCanvasElements: () => ElementSummary[]
+  deleteElements: (ids: string[]) => { deleted: string[], notFound: string[] }
+}
+
+/**
+ * 定义可用的工具
+ */
+const TOOLS = [
+  {
+    type: 'function' as const,
+    function: {
+      name: 'get_canvas_elements',
+      description: '获取画布上所有元素的信息，包括形状、文字、箭头等。当需要了解画布当前状态时调用此工具。',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'delete_elements',
+      description: '删除画布上指定的元素。传入要删除的元素 id 数组。注意：删除形状时会自动删除绑定在其中的文字。',
+      parameters: {
+        type: 'object',
+        properties: {
+          ids: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '要删除的元素 id 数组'
+          }
+        },
+        required: ['ids']
+      }
+    }
+  }
+]
 
 const STORAGE_KEY = 'ai-excalidraw-config'
 
@@ -116,14 +171,15 @@ ${elementsContext}
 }
 
 /**
- * 流式调用 AI API
+ * 流式调用 AI API（支持工具调用）
  */
 export async function streamChat(
   userMessage: string,
   onChunk: (content: string) => void,
   onError?: (error: Error) => void,
   config?: AIConfig,
-  selectedElements?: ElementSummary[]
+  selectedElements?: ElementSummary[],
+  toolExecutor?: ToolExecutor
 ): Promise<void> {
   const finalConfig = config || getAIConfig()
 
@@ -140,18 +196,41 @@ export async function streamChat(
     { role: 'user', content: contextualMessage },
   ]
 
+  // 递归处理，支持多轮工具调用
+  await processChat(messages, finalConfig, onChunk, onError, toolExecutor)
+}
+
+/**
+ * 处理聊天请求（可递归处理工具调用）
+ */
+async function processChat(
+  messages: ChatMessage[],
+  config: AIConfig,
+  onChunk: (content: string) => void,
+  onError?: (error: Error) => void,
+  toolExecutor?: ToolExecutor,
+  maxToolCalls = 3  // 最大工具调用次数，防止无限循环
+): Promise<void> {
   try {
-    const response = await fetch(`${finalConfig.baseURL}/chat/completions`, {
+    const requestBody: Record<string, unknown> = {
+      model: config.model,
+      messages,
+      stream: true,
+    }
+
+    // 如果有工具执行器，添加工具定义
+    if (toolExecutor) {
+      requestBody.tools = TOOLS
+      requestBody.tool_choice = 'auto'
+    }
+
+    const response = await fetch(`${config.baseURL}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${finalConfig.apiKey}`,
+        'Authorization': `Bearer ${config.apiKey}`,
       },
-      body: JSON.stringify({
-        model: finalConfig.model,
-        messages,
-        stream: true,
-      }),
+      body: JSON.stringify(requestBody),
     })
 
     if (!response.ok) {
@@ -166,6 +245,8 @@ export async function streamChat(
 
     const decoder = new TextDecoder()
     let buffer = ''
+    let fullContent = ''
+    const toolCalls: Map<number, ToolCall> = new Map()
 
     while (true) {
       const { done, value } = await reader.read()
@@ -186,9 +267,30 @@ export async function streamChat(
 
         try {
           const json = JSON.parse(data)
-          const content = json.choices?.[0]?.delta?.content || ''
-          if (content) {
-            onChunk(content)
+          const delta = json.choices?.[0]?.delta
+          
+          // 处理文本内容
+          if (delta?.content) {
+            fullContent += delta.content
+            onChunk(delta.content)
+          }
+          
+          // 处理工具调用
+          if (delta?.tool_calls) {
+            for (const tc of delta.tool_calls) {
+              const index = tc.index ?? 0
+              if (!toolCalls.has(index)) {
+                toolCalls.set(index, {
+                  id: tc.id || '',
+                  type: 'function',
+                  function: { name: '', arguments: '' }
+                })
+              }
+              const existing = toolCalls.get(index)!
+              if (tc.id) existing.id = tc.id
+              if (tc.function?.name) existing.function.name = tc.function.name
+              if (tc.function?.arguments) existing.function.arguments += tc.function.arguments
+            }
           }
         } catch {
           // 解析失败，可能是不完整的 JSON，跳过
@@ -202,16 +304,99 @@ export async function streamChat(
       if (trimmed.startsWith('data: ') && trimmed !== 'data: [DONE]') {
         try {
           const json = JSON.parse(trimmed.slice(6))
-          const content = json.choices?.[0]?.delta?.content || ''
-          if (content) {
-            onChunk(content)
+          const delta = json.choices?.[0]?.delta
+          if (delta?.content) {
+            fullContent += delta.content
+            onChunk(delta.content)
           }
         } catch {
           // ignore
         }
       }
     }
+
+    // 如果有工具调用，执行工具并继续对话
+    if (toolCalls.size > 0 && toolExecutor && maxToolCalls > 0) {
+      const toolCallsArray = Array.from(toolCalls.values())
+      
+      // 添加助手消息（包含工具调用）
+      messages.push({
+        role: 'assistant',
+        content: fullContent,
+        tool_calls: toolCallsArray
+      })
+
+      // 执行每个工具调用并添加结果
+      for (const tc of toolCallsArray) {
+        const result = executeToolCall(tc, toolExecutor)
+        messages.push({
+          role: 'tool',
+          content: result,
+          tool_call_id: tc.id
+        })
+      }
+
+      // 提示用户正在处理
+      onChunk('\n\n[正在分析画布内容...]\n\n')
+
+      // 递归调用继续对话
+      await processChat(messages, config, onChunk, onError, toolExecutor, maxToolCalls - 1)
+    }
   } catch (error) {
     onError?.(error instanceof Error ? error : new Error(String(error)))
+  }
+}
+
+/**
+ * 执行工具调用
+ */
+function executeToolCall(toolCall: ToolCall, executor: ToolExecutor): string {
+  const { name, arguments: args } = toolCall.function
+  
+  switch (name) {
+    case 'get_canvas_elements': {
+      const elements = executor.getCanvasElements()
+      if (elements.length === 0) {
+        return JSON.stringify({ message: '画布为空，没有任何元素' })
+      }
+      return JSON.stringify({
+        message: `画布上共有 ${elements.length} 个元素`,
+        elements: elements.map(el => ({
+          id: el.id,
+          type: el.type,
+          text: el.text,
+          position: { x: el.x, y: el.y },
+          size: { width: el.width, height: el.height },
+          strokeColor: el.strokeColor,
+          backgroundColor: el.backgroundColor,
+          containerId: el.containerId
+        }))
+      })
+    }
+    case 'delete_elements': {
+      try {
+        const parsed = JSON.parse(args)
+        const ids = parsed.ids as string[]
+        if (!Array.isArray(ids) || ids.length === 0) {
+          return JSON.stringify({ error: '请提供要删除的元素 id 数组' })
+        }
+        const result = executor.deleteElements(ids)
+        if (result.deleted.length === 0) {
+          return JSON.stringify({ 
+            message: '没有找到可删除的元素',
+            notFound: result.notFound 
+          })
+        }
+        return JSON.stringify({
+          message: `成功删除 ${result.deleted.length} 个元素`,
+          deleted: result.deleted,
+          notFound: result.notFound.length > 0 ? result.notFound : undefined
+        })
+      } catch (e) {
+        return JSON.stringify({ error: `参数解析失败: ${e}` })
+      }
+    }
+    default:
+      return JSON.stringify({ error: `未知工具: ${name}` })
   }
 }
