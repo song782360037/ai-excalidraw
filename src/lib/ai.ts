@@ -269,6 +269,13 @@ async function processChat(
           const json = JSON.parse(data)
           const delta = json.choices?.[0]?.delta
           
+          // 处理思考内容（支持 reasoning_content / thinking 字段）
+          const thinking = delta?.reasoning_content || delta?.thinking
+          if (thinking) {
+            // 使用特殊标记包裹思考内容
+            onChunk(`<think>${thinking}</think>`)
+          }
+          
           // 处理文本内容
           if (delta?.content) {
             fullContent += delta.content

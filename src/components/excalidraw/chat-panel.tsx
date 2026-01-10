@@ -12,7 +12,10 @@ import {
   ChevronLeft,
   ChevronRight,
   Sparkles,
-  CheckSquare
+  CheckSquare,
+  Brain,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react'
 import { useChatHistory, type ChatMessage } from './use-chat-history'
 import { parseExcalidrawElements, type ParsedElement } from './element-parser'
@@ -494,19 +497,89 @@ function removeJsonObjects(text: string): string {
 }
 
 /**
- * 助手消息组件 - 隐藏 JSON 元素，只显示文本
+ * 从内容中提取思考内容和正文
+ */
+function parseThinkingContent(content: string): { thinking: string; main: string } {
+  let thinking = ''
+  let main = content
+  
+  // 匹配所有 <think>...</think> 标签
+  const thinkRegex = /<think>([\s\S]*?)<\/think>/g
+  let match
+  while ((match = thinkRegex.exec(content)) !== null) {
+    thinking += match[1]
+  }
+  
+  // 移除 thinking 标签
+  main = content.replace(/<think>[\s\S]*?<\/think>/g, '')
+  
+  return { thinking: thinking.trim(), main }
+}
+
+/**
+ * 思考内容折叠组件
+ */
+function ThinkingBlock({ content }: { content: string }) {
+  const [isExpanded, setIsExpanded] = useState(false)
+  
+  if (!content) return null
+  
+  return (
+    <div className="mb-2 rounded-lg bg-primary/5 border border-primary/20 overflow-hidden">
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-primary/70 hover:bg-primary/10 transition-colors"
+      >
+        <Brain className="w-3.5 h-3.5" />
+        <span className="font-medium">思考过程</span>
+        {isExpanded ? (
+          <ChevronUp className="w-3.5 h-3.5 ml-auto" />
+        ) : (
+          <ChevronDown className="w-3.5 h-3.5 ml-auto" />
+        )}
+      </button>
+      {isExpanded && (
+        <div className="px-3 py-2 text-xs text-foreground/60 border-t border-primary/10 whitespace-pre-wrap">
+          {content}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 助手消息组件 - 隐藏 JSON 元素，显示思考内容和正文
  */
 function AssistantMessage({ content }: { content: string }) {
-  const displayContent = removeJsonObjects(content)
+  const { thinking, main } = parseThinkingContent(content)
+  const displayContent = removeJsonObjects(main)
   
-  if (!displayContent) {
+  // 检查是否正在思考中（有未闭合的 think 标签）
+  const isThinking = content.includes('<think>') && !content.includes('</think>')
+  
+  if (!displayContent && !thinking) {
     // 检查原始内容是否包含 JSON 元素
     const hasElements = /"type"\s*:\s*"(rectangle|ellipse|diamond|text|arrow|line)"/.test(content)
     if (hasElements) {
       return <span className="text-foreground/50 italic">✨ 图形已生成到画布</span>
     }
+    if (isThinking) {
+      return (
+        <div className="flex items-center gap-2 text-foreground/50 italic">
+          <Brain className="w-4 h-4 animate-pulse" />
+          <span>正在思考...</span>
+        </div>
+      )
+    }
     return <span className="text-foreground/50 italic">正在生成...</span>
   }
   
-  return <>{displayContent}</>
+  return (
+    <>
+      {thinking && <ThinkingBlock content={thinking} />}
+      {displayContent || (
+        <span className="text-foreground/50 italic">✨ 图形已生成到画布</span>
+      )}
+    </>
+  )
 }
