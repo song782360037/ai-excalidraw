@@ -62,42 +62,27 @@ export function ChatPanel({ className, onElementsGenerated, excalidrawRef }: Cha
     scrollToBottom()
   }, [currentSession?.messages, scrollToBottom])
 
-  // 更新选中状态
-  const updateSelectedCount = useCallback(() => {
-    if (!excalidrawRef?.current) return
-    try {
-      const count = excalidrawRef.current.getSelectedElements().length
-      setSelectedCount(count)
-    } catch (error) {
-      console.error('Error updating selected count:', error)
-    }
-  }, [excalidrawRef])
-
-  // 更新选中元素的ID列表
-  const updateSelectedElementIds = useCallback(() => {
+  // 更新选中元素状态（统一使用 getSelectedElementsSummary，包含绑定元素）
+  const updateSelectedElements = useCallback(() => {
     if (!excalidrawRef?.current) return
     try {
       const selectedElements = excalidrawRef.current.getSelectedElementsSummary()
-      const ids = selectedElements.map(el => el.id)
-      setSelectedElementIds(ids)
+      setSelectedCount(selectedElements.length)
+      setSelectedElementIds(selectedElements.map(el => el.id))
     } catch (error) {
-      console.error('Error updating selected element IDs:', error)
+      console.error('Error updating selected elements:', error)
     }
   }, [excalidrawRef])
 
   // 初始化时检查一次，并定时更新选中状态
   useEffect(() => {
-    updateSelectedCount()
-    updateSelectedElementIds()
+    updateSelectedElements()
 
     // 定时更新选中状态（每秒检查一次）
-    const interval = setInterval(() => {
-      updateSelectedCount()
-      updateSelectedElementIds()
-    }, 1000)
+    const interval = setInterval(updateSelectedElements, 1000)
 
     return () => clearInterval(interval)
-  }, [updateSelectedCount, updateSelectedElementIds])
+  }, [updateSelectedElements])
 
   // 在会话加载完成且有当前会话时，同步画布
   useEffect(() => {
