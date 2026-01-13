@@ -1,5 +1,5 @@
 import { EXCALIDRAW_SYSTEM_PROMPT } from './prompt'
-import type { ElementSummary } from '@/components/excalidraw/wrapper'
+import type { ElementSummary, ElementUpdate } from '@/components/excalidraw/wrapper'
 
 export interface AIConfig {
   apiKey: string
@@ -29,6 +29,8 @@ export interface ToolCall {
 export interface ToolExecutor {
   getCanvasElements: () => ElementSummary[]
   deleteElements: (ids: string[]) => { deleted: string[], notFound: string[] }
+  updateElements: (updates: ElementUpdate[]) => { updated: string[], notFound: string[] }
+  moveElements: (ids: string[], dx: number, dy: number) => { moved: string[], notFound: string[] }
 }
 
 /**
@@ -62,6 +64,68 @@ const TOOLS = [
           }
         },
         required: ['ids']
+      }
+    }
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'update_elements',
+      description: '更新画布上现有元素的属性（如颜色、文本、大小等）。只需传入 id 和要修改的属性，未传入的属性保持原值。修改现有元素时优先使用此工具。',
+      parameters: {
+        type: 'object',
+        properties: {
+          elements: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                id: { type: 'string', description: '元素 id（必填）' },
+                x: { type: 'number', description: '新的 X 坐标' },
+                y: { type: 'number', description: '新的 Y 坐标' },
+                width: { type: 'number', description: '新的宽度' },
+                height: { type: 'number', description: '新的高度' },
+                text: { type: 'string', description: '新的文本内容' },
+                strokeColor: { type: 'string', description: '新的边框颜色' },
+                backgroundColor: { type: 'string', description: '新的背景色' },
+                strokeWidth: { type: 'number', description: '新的边框宽度' },
+                strokeStyle: { type: 'string', enum: ['solid', 'dashed', 'dotted'], description: '新的边框样式' },
+                fillStyle: { type: 'string', enum: ['solid', 'hachure', 'cross-hatch'], description: '新的填充样式' },
+                opacity: { type: 'number', description: '新的透明度 (0-100)' },
+                fontSize: { type: 'number', description: '新的字体大小' }
+              },
+              required: ['id']
+            },
+            description: '要更新的元素数组，每个元素必须包含 id 和要修改的属性'
+          }
+        },
+        required: ['elements']
+      }
+    }
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'move_elements',
+      description: '批量移动画布上的元素。传入元素 id 数组和位移量，会自动移动关联的绑定元素（如形状内的文字）。调整布局时使用。',
+      parameters: {
+        type: 'object',
+        properties: {
+          ids: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '要移动的元素 id 数组'
+          },
+          dx: {
+            type: 'number',
+            description: 'X 方向位移量（正数向右，负数向左）'
+          },
+          dy: {
+            type: 'number',
+            description: 'Y 方向位移量（正数向下，负数向上）'
+          }
+        },
+        required: ['ids', 'dx', 'dy']
       }
     }
   }
@@ -410,6 +474,63 @@ function executeToolCall(toolCall: ToolCall, executor: ToolExecutor): string {
         return JSON.stringify({
           message: `成功删除 ${result.deleted.length} 个元素`,
           deleted: result.deleted,
+          notFound: result.notFound.length > 0 ? result.notFound : undefined
+        })
+      } catch (e) {
+        return JSON.stringify({ error: `参数解析失败: ${e}` })
+      }
+    }
+    case 'update_elements': {
+      try {
+        const parsed = JSON.parse(args)
+        const elements = parsed.elements as { id: string; [key: string]: unknown }[]
+        if (!Array.isArray(elements) || elements.length === 0) {
+          return JSON.stringify({ error: '请提供要更新的元素数组' })
+        }
+        // 检查每个元素都有 id
+        for (const el of elements) {
+          if (!el.id) {
+            return JSON.stringify({ error: '每个元素必须包含 id' })
+          }
+        }
+        const result = executor.updateElements(elements)
+        if (result.updated.length === 0) {
+          return JSON.stringify({ 
+            message: '没有找到可更新的元素',
+            notFound: result.notFound 
+          })
+        }
+        return JSON.stringify({
+          message: `成功更新 ${result.updated.length} 个元素`,
+          updated: result.updated,
+          notFound: result.notFound.length > 0 ? result.notFound : undefined
+        })
+      } catch (e) {
+        return JSON.stringify({ error: `参数解析失败: ${e}` })
+      }
+    }
+    case 'move_elements': {
+      try {
+        const parsed = JSON.parse(args)
+        const ids = parsed.ids as string[]
+        const dx = parsed.dx as number
+        const dy = parsed.dy as number
+        if (!Array.isArray(ids) || ids.length === 0) {
+          return JSON.stringify({ error: '请提供要移动的元素 id 数组' })
+        }
+        if (typeof dx !== 'number' || typeof dy !== 'number') {
+          return JSON.stringify({ error: '请提供有效的位移量 dx 和 dy' })
+        }
+        const result = executor.moveElements(ids, dx, dy)
+        if (result.moved.length === 0) {
+          return JSON.stringify({ 
+            message: '没有找到可移动的元素',
+            notFound: result.notFound 
+          })
+        }
+        return JSON.stringify({
+          message: `成功移动 ${result.moved.length} 个元素`,
+          moved: result.moved,
           notFound: result.notFound.length > 0 ? result.notFound : undefined
         })
       } catch (e) {

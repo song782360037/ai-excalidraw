@@ -20,6 +20,24 @@ export interface ElementSummary {
   containerId?: string  // 如果是绑定在形状内的文字，这里是容器形状的 id
 }
 
+export interface ElementUpdate {
+  id: string
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+  text?: string
+  strokeColor?: string
+  backgroundColor?: string
+  strokeWidth?: number
+  strokeStyle?: 'solid' | 'dashed' | 'dotted'
+  fillStyle?: 'solid' | 'hachure' | 'cross-hatch'
+  roughness?: number
+  opacity?: number
+  fontSize?: number
+  fontFamily?: number
+}
+
 export interface ExcalidrawWrapperRef {
   addElements: (elements: ParsedElement[]) => void
   clearCanvas: () => void
@@ -33,6 +51,20 @@ export interface ExcalidrawWrapperRef {
    * @returns 删除结果：deleted 为成功删除的 id，notFound 为未找到的 id
    */
   deleteElements: (ids: string[]) => { deleted: string[], notFound: string[] }
+  /**
+   * 更新指定元素的属性（只更新传入的属性，其他保持原值）
+   * @param updates 要更新的元素数组，每个元素必须包含 id
+   * @returns 更新结果：updated 为成功更新的 id，notFound 为未找到的 id
+   */
+  updateElements: (updates: ElementUpdate[]) => { updated: string[], notFound: string[] }
+  /**
+   * 批量移动元素
+   * @param ids 要移动的元素 id 数组
+   * @param dx X 方向位移
+   * @param dy Y 方向位移
+   * @returns 移动结果：moved 为成功移动的 id，notFound 为未找到的 id
+   */
+  moveElements: (ids: string[], dx: number, dy: number) => { moved: string[], notFound: string[] }
   /** 
    * 切换到指定会话的画布（会自动保存当前画布）
    * @param sessionId 目标会话 ID
@@ -278,6 +310,83 @@ export const ExcalidrawWrapper = forwardRef<ExcalidrawWrapperRef, ExcalidrawWrap
           deleted: Array.from(toDelete), 
           notFound 
         }
+      },
+      updateElements: (updates: ElementUpdate[]) => {
+        const api = excalidrawAPIRef.current
+        if (!api) return { updated: [], notFound: updates.map(u => u.id) }
+
+        const currentElements = api.getSceneElements()
+        const existingMap = new Map(currentElements.map((el: ExcalidrawElement) => [el.id, el]))
+        
+        const updated: string[] = []
+        const notFound: string[] = []
+        
+        // 检查哪些元素存在
+        for (const update of updates) {
+          if (existingMap.has(update.id)) {
+            updated.push(update.id)
+          } else {
+            notFound.push(update.id)
+          }
+        }
+        
+        // 更新元素
+        const updatedElements = currentElements.map((el: ExcalidrawElement) => {
+          const update = updates.find(u => u.id === el.id)
+          if (!update) return el
+          
+          // 只合并传入的属性，其他保持原值
+          const { id, ...changes } = update
+          return { ...el, ...changes }
+        })
+        
+        api.updateScene({ elements: updatedElements })
+        
+        return { updated, notFound }
+      },
+      moveElements: (ids: string[], dx: number, dy: number) => {
+        const api = excalidrawAPIRef.current
+        if (!api) return { moved: [], notFound: ids }
+
+        const currentElements = api.getSceneElements()
+        const existingIds = new Set(currentElements.map((el: ExcalidrawElement) => el.id))
+        const idsToMove = new Set(ids.filter(id => existingIds.has(id)))
+        
+        const moved: string[] = []
+        const notFound: string[] = []
+        
+        for (const id of ids) {
+          if (existingIds.has(id)) {
+            moved.push(id)
+          } else {
+            notFound.push(id)
+          }
+        }
+        
+        // 查找需要级联移动的绑定元素
+        for (const el of currentElements) {
+          if (idsToMove.has(el.id) && el.boundElements && Array.isArray(el.boundElements)) {
+            for (const bound of el.boundElements) {
+              if (existingIds.has(bound.id)) {
+                idsToMove.add(bound.id)
+              }
+            }
+          }
+        }
+        
+        // 移动元素
+        const movedElements = currentElements.map((el: ExcalidrawElement) => {
+          if (!idsToMove.has(el.id)) return el
+          return {
+            ...el,
+            x: el.x + dx,
+            y: el.y + dy,
+          }
+        })
+        
+        api.updateScene({ elements: movedElements })
+        
+        return { moved: Array.from(idsToMove), notFound }
       },
       getElements: () => {
         const api = excalidrawAPIRef.current
