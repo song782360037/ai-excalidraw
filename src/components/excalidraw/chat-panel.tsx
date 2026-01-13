@@ -151,6 +151,9 @@ export function ChatPanel({ className, onElementsGenerated, excalidrawRef }: Cha
       deleteElements: (ids: string[]) => excalidrawRef?.current?.deleteElements(ids) || { deleted: [], notFound: ids }
     }
 
+    // 获取历史消息（不包含当前这条，因为刚刚添加的用户消息和空的助手消息）
+    const historyMessages = (currentSession?.messages || []).slice(0, -2)
+
     await streamChat(
       userMessage,
       (chunk) => {
@@ -170,7 +173,8 @@ export function ChatPanel({ className, onElementsGenerated, excalidrawRef }: Cha
       },
       undefined,
       selectedElements, // 传递选中的元素
-      toolExecutor // 传递工具执行器
+      toolExecutor, // 传递工具执行器
+      historyMessages // 传递历史消息
     )
 
     // 最终解析

@@ -179,7 +179,8 @@ export async function streamChat(
   onError?: (error: Error) => void,
   config?: AIConfig,
   selectedElements?: ElementSummary[],
-  toolExecutor?: ToolExecutor
+  toolExecutor?: ToolExecutor,
+  historyMessages?: { role: string; content: string }[]
 ): Promise<void> {
   const finalConfig = config || getAIConfig()
 
@@ -191,10 +192,22 @@ export async function streamChat(
   // 构建带有选中元素上下文的用户消息
   const contextualMessage = buildUserMessage(userMessage, selectedElements)
 
+  // 构建消息数组，包含历史消息
   const messages: ChatMessage[] = [
     { role: 'system', content: EXCALIDRAW_SYSTEM_PROMPT },
-    { role: 'user', content: contextualMessage },
   ]
+
+  // 添加历史消息（只保留 user 和 assistant）
+  if (historyMessages && historyMessages.length > 0) {
+    for (const msg of historyMessages) {
+      if (msg.role === 'user' || msg.role === 'assistant') {
+        messages.push({ role: msg.role as 'user' | 'assistant', content: msg.content })
+      }
+    }
+  }
+
+  // 添加当前用户消息
+  messages.push({ role: 'user', content: contextualMessage })
 
   // 递归处理，支持多轮工具调用
   await processChat(messages, finalConfig, onChunk, onError, toolExecutor)
