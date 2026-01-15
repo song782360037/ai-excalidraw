@@ -28,6 +28,7 @@ export interface ToolCall {
  */
 export interface ToolExecutor {
   getCanvasElements: () => ElementSummary[]
+  getElementsByIds: (ids: string[]) => { elements: ElementSummary[], notFound: string[] }
   deleteElements: (ids: string[]) => { deleted: string[], notFound: string[] }
   updateElements: (updates: ElementUpdate[]) => { updated: string[], notFound: string[] }
   moveElements: (ids: string[], dx: number, dy: number) => { moved: string[], notFound: string[] }
@@ -46,6 +47,24 @@ const TOOLS = [
         type: 'object',
         properties: {},
         required: []
+      }
+    }
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'get_elements_by_ids',
+      description: '根据 ID 获取指定元素的详细信息。当只需要查看特定元素时使用，比 get_canvas_elements 更高效。',
+      parameters: {
+        type: 'object',
+        properties: {
+          ids: {
+            type: 'array',
+            items: { type: 'string' },
+            description: '要获取的元素 id 数组'
+          }
+        },
+        required: ['ids']
       }
     }
   },
@@ -324,6 +343,7 @@ async function processChat(
     let buffer = ''
     let fullContent = ''
     const toolCalls: Map<number, ToolCall> = new Map()
+    let finishReason: string | null = null  // 记录结束原因
 
     while (true) {
       const { done, value } = await reader.read()
@@ -344,7 +364,13 @@ async function processChat(
 
         try {
           const json = JSON.parse(data)
-          const delta = json.choices?.[0]?.delta
+          const choice = json.choices?.[0]
+          const delta = choice?.delta
+          
+          // 记录结束原因（关键！用于判断是否需要继续工具调用）
+          if (choice?.finish_reason) {
+            finishReason = choice.finish_reason
+          }
           
           // 处理思考内容（支持 reasoning_content / thinking 字段）
           const thinking = delta?.reasoning_content || delta?.thinking
@@ -400,31 +426,61 @@ async function processChat(
     }
 
     // 如果有工具调用，执行工具并继续对话
-    if (toolCalls.size > 0 && toolExecutor && maxToolCalls > 0) {
-      const toolCallsArray = Array.from(toolCalls.values())
+    // 关键修复：同时检查 finish_reason 是否为 tool_calls 或 stop
+    // 有些模型在工具调用时 finish_reason 为 'tool_calls'，有些为 'stop' 但有 tool_calls 数据
+    const hasToolCalls = toolCalls.size > 0 && Array.from(toolCalls.values()).some(
+      tc => tc.id && tc.function.name  // 确保工具调用有效
+    )
+    const shouldProcessTools = hasToolCalls && toolExecutor && maxToolCalls > 0
+    
+    if (shouldProcessTools) {
+      const toolCallsArray = Array.from(toolCalls.values()).filter(
+        tc => tc.id && tc.function.name  // 过滤无效的工具调用
+      )
       
-      // 添加助手消息（包含工具调用）
-      messages.push({
-        role: 'assistant',
-        content: fullContent,
-        tool_calls: toolCallsArray
-      })
-
-      // 执行每个工具调用并添加结果
-      for (const tc of toolCallsArray) {
-        const result = executeToolCall(tc, toolExecutor)
+      if (toolCallsArray.length > 0) {
+        // 添加助手消息（包含工具调用）
         messages.push({
-          role: 'tool',
-          content: result,
-          tool_call_id: tc.id
-        })
+          role: 'assistant',
+          content: fullContent || null,  // 允许空内容
+          tool_calls: toolCallsArray
+        } as ChatMessage)
+
+        // 执行每个工具调用并添加结果
+        for (const tc of toolCallsArray) {
+          const result = executeToolCall(tc, toolExecutor)
+          messages.push({
+            role: 'tool',
+            content: result,
+            tool_call_id: tc.id
+          })
+        }
+
+        // 提示用户正在处理（根据工具类型显示不同提示）
+        const toolNames = toolCallsArray.map(tc => tc.function.name)
+        let hint = '正在处理...'
+        if (toolNames.includes('get_canvas_elements')) {
+          hint = '正在分析画布内容...'
+        } else if (toolNames.includes('update_elements')) {
+          hint = '正在更新元素...'
+        } else if (toolNames.includes('move_elements')) {
+          hint = '正在移动元素...'
+        } else if (toolNames.includes('delete_elements')) {
+          hint = '正在删除元素...'
+        }
+        onChunk(`
+
+[${hint}]
+
+`)
+
+        // 递归调用继续对话
+        await processChat(messages, config, onChunk, onError, toolExecutor, maxToolCalls - 1)
       }
-
-      // 提示用户正在处理
-      onChunk('\n\n[正在分析画布内容...]\n\n')
-
-      // 递归调用继续对话
-      await processChat(messages, config, onChunk, onError, toolExecutor, maxToolCalls - 1)
+    } else if (finishReason === 'tool_calls' && toolCalls.size > 0) {
+      // 边缘情况：finish_reason 是 tool_calls 但工具信息不完整
+      console.warn('Tool call indicated but tool data incomplete:', toolCalls)
+      onChunk('\n\n[工具调用信息不完整，请重试]\n\n')
     }
   } catch (error) {
     onError?.(error instanceof Error ? error : new Error(String(error)))
@@ -456,6 +512,38 @@ function executeToolCall(toolCall: ToolCall, executor: ToolExecutor): string {
           containerId: el.containerId
         }))
       })
+    }
+    case 'get_elements_by_ids': {
+      try {
+        const parsed = JSON.parse(args)
+        const ids = parsed.ids as string[]
+        if (!Array.isArray(ids) || ids.length === 0) {
+          return JSON.stringify({ error: '请提供要获取的元素 id 数组' })
+        }
+        const result = executor.getElementsByIds(ids)
+        if (result.elements.length === 0) {
+          return JSON.stringify({ 
+            message: '没有找到指定的元素',
+            notFound: result.notFound 
+          })
+        }
+        return JSON.stringify({
+          message: `找到 ${result.elements.length} 个元素`,
+          elements: result.elements.map(el => ({
+            id: el.id,
+            type: el.type,
+            text: el.text,
+            position: { x: el.x, y: el.y },
+            size: { width: el.width, height: el.height },
+            strokeColor: el.strokeColor,
+            backgroundColor: el.backgroundColor,
+            containerId: el.containerId
+          })),
+          notFound: result.notFound.length > 0 ? result.notFound : undefined
+        })
+      } catch (e) {
+        return JSON.stringify({ error: `参数解析失败: ${e}` })
+      }
     }
     case 'delete_elements': {
       try {

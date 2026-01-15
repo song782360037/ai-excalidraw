@@ -148,6 +148,7 @@ export function ChatPanel({ className, onElementsGenerated, excalidrawRef }: Cha
     // 创建工具执行器
     const toolExecutor: ToolExecutor = {
       getCanvasElements: () => excalidrawRef?.current?.getCanvasState() || [],
+      getElementsByIds: (ids: string[]) => excalidrawRef?.current?.getElementsByIds(ids) || { elements: [], notFound: ids },
       deleteElements: (ids: string[]) => excalidrawRef?.current?.deleteElements(ids) || { deleted: [], notFound: ids },
       updateElements: (updates) => excalidrawRef?.current?.updateElements(updates) || { updated: [], notFound: updates.map(u => u.id) },
       moveElements: (ids: string[], dx: number, dy: number) => excalidrawRef?.current?.moveElements(ids, dx, dy) || { moved: [], notFound: ids }

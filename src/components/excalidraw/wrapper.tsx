@@ -46,6 +46,12 @@ export interface ExcalidrawWrapperRef {
   getCanvasState: () => ElementSummary[]
   getSelectedElementsSummary: () => ElementSummary[]
   /**
+   * 根据 ID 获取指定元素的信息
+   * @param ids 要获取的元素 id 数组
+   * @returns 获取结果：elements 为找到的元素，notFound 为未找到的 id
+   */
+  getElementsByIds: (ids: string[]) => { elements: ElementSummary[], notFound: string[] }
+  /**
    * 删除指定 id 的元素
    * @param ids 要删除的元素 id 数组
    * @returns 删除结果：deleted 为成功删除的 id，notFound 为未找到的 id
@@ -89,6 +95,36 @@ interface ExcalidrawWrapperProps {
 const STORAGE_KEY_BASE = 'excalidraw-canvas-data'
 // 兼容性：共享画布 key（用于老会话）
 const SHARED_STORAGE_KEY = 'excalidraw-canvas-data'
+
+/**
+ * 计算文本的宽高（根据字体大小和文本内容）
+ * - 中文字符宽度 ≈ fontSize
+ * - 英文字符宽度 ≈ fontSize * 0.6
+ * - 单行高度 = fontSize * 1.25
+ */
+function calculateTextSize(text: string, fontSize: number): { width: number; height: number } {
+  const lines = text.split('\n')
+  let maxWidth = 0
+  
+  for (const line of lines) {
+    let lineWidth = 0
+    for (const char of line) {
+      // 中文字符（包括CJK字符）
+      if (/[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u30ff]/.test(char)) {
+        lineWidth += fontSize
+      } else {
+        lineWidth += fontSize * 0.6
+      }
+    }
+    maxWidth = Math.max(maxWidth, lineWidth)
+  }
+  
+  // 确保最小宽度
+  const width = Math.max(maxWidth, fontSize)
+  const height = lines.length * fontSize * 1.25
+  
+  return { width: Math.ceil(width), height: Math.ceil(height) }
+}
 
 /**
  * 获取会话对应的存储 key
@@ -336,8 +372,28 @@ export const ExcalidrawWrapper = forwardRef<ExcalidrawWrapperRef, ExcalidrawWrap
           if (!update) return el
           
           // 只合并传入的属性，其他保持原值
-          const { id, ...changes } = update
-          return { ...el, ...changes }
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          const { id: _id, ...changes } = update
+          let newEl = { ...el, ...changes }
+          
+          // 如果更新了文本内容，自动重新计算宽高（仅当未显式指定新尺寸时）
+          if (el.type === 'text' && changes.text !== undefined && 
+              changes.width === undefined && changes.height === undefined) {
+            const fontSize = changes.fontSize ?? el.fontSize ?? 20
+            const { width, height } = calculateTextSize(changes.text, fontSize)
+            newEl = { ...newEl, width, height }
+          }
+          
+          // 如果更新了字体大小但没有更新文本，也需要重新计算尺寸
+          if (el.type === 'text' && changes.fontSize !== undefined && 
+              changes.text === undefined &&
+              changes.width === undefined && changes.height === undefined) {
+            const text = el.text ?? ''
+            const { width, height } = calculateTextSize(text, changes.fontSize)
+            newEl = { ...newEl, width, height }
+          }
+          
+          return newEl
         })
         
         api.updateScene({ elements: updatedElements })
@@ -363,25 +419,37 @@ export const ExcalidrawWrapper = forwardRef<ExcalidrawWrapperRef, ExcalidrawWrap
           }
         }
         
-        // 查找需要级联移动的绑定元素
+        // 查找需要级联移动的元素
         for (const el of currentElements) {
+          // 1. 形状内的绑定文字
           if (idsToMove.has(el.id) && el.boundElements && Array.isArray(el.boundElements)) {
             for (const bound of el.boundElements) {
-              if (existingIds.has(bound.id)) {
+              if (existingIds.has(bound.id) && bound.type === 'text') {
                 idsToMove.add(bound.id)
               }
             }
           }
+          
+          // 2. 如果移动的是绑定文字，也移动其容器（可选行为，取决于需求）
+          // 注：通常不需要，因为用户一般是移动容器而不是移动绑定文字
         }
         
         // 移动元素
         const movedElements = currentElements.map((el: ExcalidrawElement) => {
           if (!idsToMove.has(el.id)) return el
-          return {
+          
+          // 基本位移
+          const newEl = {
             ...el,
             x: el.x + dx,
             y: el.y + dy,
           }
+          
+          // 对于箭头和线条，points 是相对坐标，不需要修改
+          // 但如果有 startBinding 或 endBinding，可能需要特殊处理
+          // Excalidraw 会自动处理绑定关系，这里只需要移动基础坐标
+          
+          return newEl
         })
         
         api.updateScene({ elements: movedElements })
@@ -410,6 +478,27 @@ export const ExcalidrawWrapper = forwardRef<ExcalidrawWrapperRef, ExcalidrawWrap
         if (!api) return []
         const allElements = api.getSceneElements()
         return allElements.map((el: ExcalidrawElement) => summarizeElement(el, allElements))
+      },
+      getElementsByIds: (ids: string[]) => {
+        const api = excalidrawAPIRef.current
+        if (!api) return { elements: [], notFound: ids }
+        
+        const allElements = api.getSceneElements()
+        const elementMap = new Map(allElements.map((el: ExcalidrawElement) => [el.id, el]))
+        
+        const elements: ElementSummary[] = []
+        const notFound: string[] = []
+        
+        for (const id of ids) {
+          const el = elementMap.get(id)
+          if (el) {
+            elements.push(summarizeElement(el, allElements))
+          } else {
+            notFound.push(id)
+          }
+        }
+        
+        return { elements, notFound }
       },
       getSelectedElementsSummary: () => {
         const api = excalidrawAPIRef.current
