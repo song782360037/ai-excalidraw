@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Card } from '@/components/ui/card'
@@ -540,7 +542,7 @@ function ThinkingBlock({ content }: { content: string }) {
 }
 
 /**
- * 助手消息组件 - 隐藏 JSON 元素，显示思考内容和正文
+ * 助手消息组件 - 隐藏 JSON 元素，显示思考内容和正文，支持 Markdown 渲染
  */
 function AssistantMessage({ content }: { content: string }) {
   const { thinking, main } = parseThinkingContent(content)
@@ -569,7 +571,52 @@ function AssistantMessage({ content }: { content: string }) {
   return (
     <>
       {thinking && <ThinkingBlock content={thinking} />}
-      {displayContent || (
+      {displayContent ? (
+        <div className="markdown-content prose prose-sm dark:prose-invert max-w-none">
+          <ReactMarkdown 
+            remarkPlugins={[remarkGfm]}
+            components={{
+              // 代码块样式
+              code: ({ className, children, ...props }) => {
+                const isInline = !className
+                return isInline ? (
+                  <code className="px-1.5 py-0.5 rounded bg-secondary text-secondary-foreground text-xs font-mono" {...props}>
+                    {children}
+                  </code>
+                ) : (
+                  <code className={cn("block p-3 rounded-lg bg-secondary/50 text-xs font-mono overflow-x-auto", className)} {...props}>
+                    {children}
+                  </code>
+                )
+              },
+              // 链接样式
+              a: ({ children, ...props }) => (
+                <a className="text-primary hover:underline" target="_blank" rel="noopener noreferrer" {...props}>
+                  {children}
+                </a>
+              ),
+              // 列表样式
+              ul: ({ children }) => <ul className="list-disc list-inside space-y-0.5 my-1">{children}</ul>,
+              ol: ({ children }) => <ol className="list-decimal list-inside space-y-0.5 my-1">{children}</ol>,
+              li: ({ children }) => <li className="leading-normal">{children}</li>,
+              // 标题样式
+              h1: ({ children }) => <h1 className="text-lg font-bold mt-2 mb-1">{children}</h1>,
+              h2: ({ children }) => <h2 className="text-base font-bold mt-2 mb-1">{children}</h2>,
+              h3: ({ children }) => <h3 className="text-sm font-bold mt-1.5 mb-0.5">{children}</h3>,
+              // 段落样式 - 减少间距
+              p: ({ children }) => <p className="my-0.5 leading-normal">{children}</p>,
+              // 表格样式
+              table: ({ children }) => <table className="border-collapse border border-border my-2 text-xs">{children}</table>,
+              th: ({ children }) => <th className="border border-border px-2 py-1 bg-secondary/30 font-medium">{children}</th>,
+              td: ({ children }) => <td className="border border-border px-2 py-1">{children}</td>,
+              // 引用样式
+              blockquote: ({ children }) => <blockquote className="border-l-2 border-primary/50 pl-3 my-2 text-foreground/70 italic">{children}</blockquote>,
+            }}
+          >
+            {displayContent}
+          </ReactMarkdown>
+        </div>
+      ) : (
         <span className="text-foreground/50 italic">✨ 图形已生成到画布</span>
       )}
     </>
