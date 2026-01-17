@@ -153,7 +153,8 @@ export function ChatPanel({ className, onElementsGenerated, excalidrawRef }: Cha
       getElementsByIds: (ids: string[]) => excalidrawRef?.current?.getElementsByIds(ids) || { elements: [], notFound: ids },
       deleteElements: (ids: string[]) => excalidrawRef?.current?.deleteElements(ids) || { deleted: [], notFound: ids },
       updateElements: (updates) => excalidrawRef?.current?.updateElements(updates) || { updated: [], notFound: updates.map(u => u.id) },
-      moveElements: (ids: string[], dx: number, dy: number) => excalidrawRef?.current?.moveElements(ids, dx, dy) || { moved: [], notFound: ids }
+      moveElements: (ids: string[], dx: number, dy: number) => excalidrawRef?.current?.moveElements(ids, dx, dy) || { moved: [], notFound: ids },
+      checkAndFixLayout: (minGap?: number) => excalidrawRef?.current?.checkAndFixLayout(minGap) || { hasIssues: false, issues: [], fixedCount: 0, message: 'API 未准备好' }
     }
 
     // 获取历史消息（不包含当前这条，因为刚刚添加的用户消息和空的助手消息）

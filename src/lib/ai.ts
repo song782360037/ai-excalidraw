@@ -1,5 +1,5 @@
 import { EXCALIDRAW_SYSTEM_PROMPT } from './prompt'
-import type { ElementSummary, ElementUpdate } from '@/components/excalidraw/wrapper'
+import type { ElementSummary, ElementUpdate, LayoutCheckResult } from '@/components/excalidraw/wrapper'
 
 export interface AIConfig {
   apiKey: string
@@ -32,6 +32,7 @@ export interface ToolExecutor {
   deleteElements: (ids: string[]) => { deleted: string[], notFound: string[] }
   updateElements: (updates: ElementUpdate[]) => { updated: string[], notFound: string[] }
   moveElements: (ids: string[], dx: number, dy: number) => { moved: string[], notFound: string[] }
+  checkAndFixLayout: (minGap?: number) => LayoutCheckResult
 }
 
 /**
@@ -145,6 +146,23 @@ const TOOLS = [
           }
         },
         required: ['ids', 'dx', 'dy']
+      }
+    }
+  },
+  {
+    type: 'function' as const,
+    function: {
+      name: 'check_and_fix_layout',
+      description: '检查并自动修复布局问题。生成元素后必须调用此工具检查重叠和超出边界，工具会自动修复发现的问题。',
+      parameters: {
+        type: 'object',
+        properties: {
+          min_gap: {
+            type: 'number',
+            description: '元素最小间距（像素），默认 40'
+          }
+        },
+        required: []
       }
     }
   }
@@ -622,6 +640,27 @@ function executeToolCall(toolCall: ToolCall, executor: ToolExecutor): string {
         })
       } catch (e) {
         return JSON.stringify({ error: `参数解析失败: ${e}` })
+      }
+    }
+    case 'check_and_fix_layout': {
+      try {
+        let minGap = 40
+        if (args && args.trim()) {
+          const parsed = JSON.parse(args)
+          if (typeof parsed.min_gap === 'number') {
+            minGap = parsed.min_gap
+          }
+        }
+        const result = executor.checkAndFixLayout(minGap)
+        return JSON.stringify({
+          success: true,
+          hasIssues: result.hasIssues,
+          issues: result.issues,
+          fixedCount: result.fixedCount,
+          message: result.message
+        })
+      } catch (e) {
+        return JSON.stringify({ error: `布局检查失败: ${e}` })
       }
     }
     default:

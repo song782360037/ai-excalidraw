@@ -38,6 +38,25 @@ export interface ElementUpdate {
   fontFamily?: number
 }
 
+/**
+ * 布局问题类型
+ */
+export interface LayoutIssue {
+  type: 'overlap' | 'out_of_bounds'
+  elementIds: string[]
+  description: string
+}
+
+/**
+ * 布局检查结果
+ */
+export interface LayoutCheckResult {
+  hasIssues: boolean
+  issues: LayoutIssue[]
+  fixedCount: number
+  message: string
+}
+
 export interface ExcalidrawWrapperRef {
   addElements: (elements: ParsedElement[]) => void
   clearCanvas: () => void
@@ -81,6 +100,12 @@ export interface ExcalidrawWrapperRef {
   getCurrentSessionId: () => string | null
   /** 检查 Excalidraw API 是否已准备好 */
   isReady: () => boolean
+  /**
+   * 检查并修复布局问题（重叠、超出边界）
+   * @param minGap 元素最小间距，默认 40px
+   * @returns 检查和修复结果
+   */
+  checkAndFixLayout: (minGap?: number) => LayoutCheckResult
 }
 
 interface ExcalidrawWrapperProps {
@@ -571,6 +596,127 @@ export const ExcalidrawWrapper = forwardRef<ExcalidrawWrapperRef, ExcalidrawWrap
       },
       getCurrentSessionId: () => currentSessionIdRef.current,
       isReady: () => excalidrawAPIRef.current !== null,
+      checkAndFixLayout: (minGap = 20) => {
+        const api = excalidrawAPIRef.current
+        const result: LayoutCheckResult = {
+          hasIssues: false,
+          issues: [],
+          fixedCount: 0,
+          message: ''
+        }
+        
+        if (!api) {
+          result.message = 'API 未准备好'
+          return result
+        }
+        
+        const elements = api.getSceneElements().filter((el: ExcalidrawElement) => !el.isDeleted)
+        if (elements.length === 0) {
+          result.message = '画布为空，无需检查'
+          return result
+        }
+        
+        // 只检测形状元素（矩形、椭圆、菱形），排除箭头、线条、文字
+        const SHAPE_TYPES = ['rectangle', 'ellipse', 'diamond']
+        const shapeElements = elements.filter((el: ExcalidrawElement) => 
+          SHAPE_TYPES.includes(el.type) && !el.containerId
+        )
+        
+        if (shapeElements.length < 2) {
+          result.message = '形状元素不足，无需检查重叠'
+          return result
+        }
+        
+        // 检测真正重叠的元素对（overlapX > 0 且 overlapY > 0）
+        const overlaps: { el1Id: string; el2Id: string; overlapX: number; overlapY: number }[] = []
+        
+        for (let i = 0; i < shapeElements.length; i++) {
+          for (let j = i + 1; j < shapeElements.length; j++) {
+            const el1 = shapeElements[i]
+            const el2 = shapeElements[j]
+            
+            const overlapX = Math.min(el1.x + (el1.width || 0), el2.x + (el2.width || 0)) - Math.max(el1.x, el2.x)
+            const overlapY = Math.min(el1.y + (el1.height || 0), el2.y + (el2.height || 0)) - Math.max(el1.y, el2.y)
+            
+            // 只有真正重叠才记录
+            if (overlapX > 0 && overlapY > 0) {
+              overlaps.push({ el1Id: el1.id, el2Id: el2.id, overlapX, overlapY })
+            }
+          }
+        }
+        
+        if (overlaps.length === 0) {
+          result.message = '布局检查通过，无元素重叠'
+          return result
+        }
+        
+        // 有重叠，进行修复
+        result.hasIssues = true
+        result.issues.push({
+          type: 'overlap',
+          elementIds: [...new Set(overlaps.flatMap(o => [o.el1Id, o.el2Id]))],
+          description: `发现 ${overlaps.length} 对元素重叠`
+        })
+        
+        // 创建元素映射
+        const elementMap = new Map<string, ExcalidrawElement>(elements.map((el: ExcalidrawElement) => [el.id, { ...el } as ExcalidrawElement]))
+        const movedIds = new Set<string>()
+        
+        // 修复重叠：只移动第二个元素
+        for (const { el1Id, el2Id, overlapX, overlapY } of overlaps) {
+          if (movedIds.has(el2Id)) continue
+          
+          const el1 = elementMap.get(el1Id)
+          const el2 = elementMap.get(el2Id)
+          if (!el1 || !el2) continue
+          
+          // 计算移动距离
+          const moveAmount = Math.max(overlapX, overlapY) + minGap
+          
+          // 决定移动方向：根据 el2 相对 el1 的位置
+          const el1CenterX = el1.x + (el1.width || 0) / 2
+          const el1CenterY = el1.y + (el1.height || 0) / 2
+          const el2CenterX = el2.x + (el2.width || 0) / 2
+          const el2CenterY = el2.y + (el2.height || 0) / 2
+          
+          let dx = 0, dy = 0
+          
+          // 选择重叠较小的方向移动
+          if (overlapX < overlapY) {
+            // 水平移动
+            dx = el2CenterX >= el1CenterX ? moveAmount : -moveAmount
+          } else {
+            // 垂直移动
+            dy = el2CenterY >= el1CenterY ? moveAmount : -moveAmount
+          }
+          
+          // 移动 el2
+          elementMap.set(el2Id, { ...el2, x: el2.x + dx, y: el2.y + dy } as ExcalidrawElement)
+          
+          // 移动 el2 内部绑定的文字
+          if (el2.boundElements) {
+            for (const bound of el2.boundElements) {
+              if (bound.type === 'text') {
+                const boundEl = elementMap.get(bound.id)
+                if (boundEl) {
+                  elementMap.set(bound.id, { ...boundEl, x: boundEl.x + dx, y: boundEl.y + dy } as ExcalidrawElement)
+                }
+              }
+            }
+          }
+          
+          movedIds.add(el2Id)
+          result.fixedCount++
+        }
+        
+        // 更新画布
+        if (result.fixedCount > 0) {
+          api.updateScene({ elements: Array.from(elementMap.values()) })
+        }
+        
+        result.message = `检测到 ${overlaps.length} 对重叠，已修复 ${result.fixedCount} 个元素`
+        return result
+      },
     }), [])
 
     // 处理变更
