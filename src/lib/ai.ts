@@ -42,7 +42,7 @@ const TOOLS = [
     type: 'function' as const,
     function: {
       name: 'get_canvas_elements',
-      description: '获取画布上所有元素的信息，包括形状、文字、箭头等。当需要了解画布当前状态时调用此工具。',
+      description: '获取画布上所有元素。仅在需要了解画布全貌且用户未选中任何元素时使用。如果用户已选中元素，直接使用提供的元素信息即可，无需调用此工具。',
       parameters: {
         type: 'object',
         properties: {},
@@ -54,7 +54,7 @@ const TOOLS = [
     type: 'function' as const,
     function: {
       name: 'get_elements_by_ids',
-      description: '根据 ID 获取指定元素的详细信息。当只需要查看特定元素时使用，比 get_canvas_elements 更高效。',
+      description: '根据 ID 获取指定元素详情。已知元素 ID 时使用，比 get_canvas_elements 更高效。',
       parameters: {
         type: 'object',
         properties: {
@@ -72,7 +72,7 @@ const TOOLS = [
     type: 'function' as const,
     function: {
       name: 'delete_elements',
-      description: '删除画布上指定的元素。传入要删除的元素 id 数组。注意：删除形状时会自动删除绑定在其中的文字。',
+      description: '删除元素。删形状时自动删除其中的文字。',
       parameters: {
         type: 'object',
         properties: {
@@ -90,7 +90,7 @@ const TOOLS = [
     type: 'function' as const,
     function: {
       name: 'update_elements',
-      description: '更新画布上现有元素的属性（如颜色、文本、大小等）。只需传入 id 和要修改的属性，未传入的属性保持原值。修改现有元素时优先使用此工具。',
+      description: '修改现有元素的属性（颜色、文本、大小等）。只传 id + 要改的属性，其他保持原值。修改现有元素时首选此工具，比输出 JSON 更高效。',
       parameters: {
         type: 'object',
         properties: {
@@ -100,22 +100,22 @@ const TOOLS = [
               type: 'object',
               properties: {
                 id: { type: 'string', description: '元素 id（必填）' },
-                x: { type: 'number', description: '新的 X 坐标' },
-                y: { type: 'number', description: '新的 Y 坐标' },
-                width: { type: 'number', description: '新的宽度' },
-                height: { type: 'number', description: '新的高度' },
-                text: { type: 'string', description: '新的文本内容' },
-                strokeColor: { type: 'string', description: '新的边框颜色' },
-                backgroundColor: { type: 'string', description: '新的背景色' },
-                strokeWidth: { type: 'number', description: '新的边框宽度' },
-                strokeStyle: { type: 'string', enum: ['solid', 'dashed', 'dotted'], description: '新的边框样式' },
-                fillStyle: { type: 'string', enum: ['solid', 'hachure', 'cross-hatch'], description: '新的填充样式' },
-                opacity: { type: 'number', description: '新的透明度 (0-100)' },
-                fontSize: { type: 'number', description: '新的字体大小' }
+                x: { type: 'number', description: 'X 坐标' },
+                y: { type: 'number', description: 'Y 坐标' },
+                width: { type: 'number', description: '宽度' },
+                height: { type: 'number', description: '高度' },
+                text: { type: 'string', description: '文本内容' },
+                strokeColor: { type: 'string', description: '边框色' },
+                backgroundColor: { type: 'string', description: '背景色' },
+                strokeWidth: { type: 'number', description: '边框宽' },
+                strokeStyle: { type: 'string', enum: ['solid', 'dashed', 'dotted'], description: '边框样式' },
+                fillStyle: { type: 'string', enum: ['solid', 'hachure', 'cross-hatch'], description: '填充样式' },
+                opacity: { type: 'number', description: '透明度 0-100' },
+                fontSize: { type: 'number', description: '字体大小' }
               },
               required: ['id']
             },
-            description: '要更新的元素数组，每个元素必须包含 id 和要修改的属性'
+            description: '要更新的元素数组'
           }
         },
         required: ['elements']
@@ -126,7 +126,7 @@ const TOOLS = [
     type: 'function' as const,
     function: {
       name: 'move_elements',
-      description: '批量移动画布上的元素。传入元素 id 数组和位移量，会自动移动关联的绑定元素（如形状内的文字）。调整布局时使用。',
+      description: '批量移动元素。传 id 数组和位移量，自动处理绑定元素。调整布局时使用。',
       parameters: {
         type: 'object',
         properties: {
@@ -137,11 +137,11 @@ const TOOLS = [
           },
           dx: {
             type: 'number',
-            description: 'X 方向位移量（正数向右，负数向左）'
+            description: 'X 位移（正=右，负=左）'
           },
           dy: {
             type: 'number',
-            description: 'Y 方向位移量（正数向下，负数向上）'
+            description: 'Y 位移（正=下，负=上）'
           }
         },
         required: ['ids', 'dx', 'dy']
@@ -205,7 +205,7 @@ export function isConfigValid(config: AIConfig): boolean {
 }
 
 /**
- * 构建包含选中元素信息的用户消息
+ * 构建包含选中元素信息的用户消息（精简版）
  */
 function buildUserMessage(userMessage: string, selectedElements?: ElementSummary[]): string {
   if (!selectedElements || selectedElements.length === 0) {
@@ -216,41 +216,40 @@ function buildUserMessage(userMessage: string, selectedElements?: ElementSummary
   const mainElements = selectedElements.filter(el => !el.containerId)
   const boundElements = selectedElements.filter(el => el.containerId)
 
-  // 构建元素描述
+  // 精简格式：id|类型|文本|位置|尺寸|颜色
   const formatElement = (el: ElementSummary, indent = '') => {
-    const parts = [`id: ${el.id}`, `type: ${el.type}`]
-    if (el.text) parts.push(`text: "${el.text}"`)
-    parts.push(`position: (${el.x}, ${el.y})`)
-    parts.push(`size: ${el.width}x${el.height}`)
-    if (el.strokeColor) parts.push(`strokeColor: ${el.strokeColor}`)
+    const parts = [el.id, el.type]
+    if (el.text) parts.push(`"${el.text}"`)
+    parts.push(`(${el.x},${el.y})`)
+    parts.push(`${el.width}x${el.height}`)
     if (el.backgroundColor && el.backgroundColor !== 'transparent') {
-      parts.push(`backgroundColor: ${el.backgroundColor}`)
+      parts.push(el.backgroundColor)
     }
-    return `${indent}- ${parts.join(', ')}`
+    return `${indent}${parts.join(' | ')}`
   }
 
   // 构建上下文
-  let elementsContext = ''
+  let ctx = ''
   for (const el of mainElements) {
-    elementsContext += formatElement(el) + '\n'
-    // 添加该元素的绑定元素（如形状内的文字）
+    ctx += formatElement(el) + '\n'
+    // 绑定元素
     const children = boundElements.filter(b => b.containerId === el.id)
     for (const child of children) {
-      elementsContext += formatElement(child, '  ') + ' (绑定在 ' + el.id + ' 内的文字)\n'
+      ctx += formatElement(child, '  └─ ') + '\n'
     }
   }
   
-  // 添加没有父元素的绑定元素（理论上不应该发生）
-  const orphanBound = boundElements.filter(b => !mainElements.find(m => m.id === b.containerId))
-  for (const el of orphanBound) {
-    elementsContext += formatElement(el) + '\n'
+  // 孤立绑定元素
+  const orphans = boundElements.filter(b => !mainElements.find(m => m.id === b.containerId))
+  for (const el of orphans) {
+    ctx += formatElement(el) + '\n'
   }
 
-  return `用户选中了以下元素，请基于这些元素进行修改：
-${elementsContext}
-用户的请求：${userMessage}
+  return `选中元素：
+${ctx}
+用户请求：${userMessage}
 
-注意：修改现有元素时，请保持相同的 id，这样会更新而不是新建元素。`
+请修改这些元素，保持相同 id。`
 }
 
 /**
