@@ -85,7 +85,7 @@ function extractJsonObjects(text: string): { json: string; endIndex: number }[] 
 
 /**
  * 从文本中解析 Excalidraw 元素（纯 JSON 格式）
- * 只解析 JSON，不添加默认值（默认值由调用方根据是否为新建元素决定）
+ * 解析 JSON 并进行基本校验，过滤无效元素
  * @param text 完整的累积文本
  * @param processedLength 已处理的长度
  * @returns 解析结果
@@ -101,20 +101,45 @@ export function parseExcalidrawElements(
   const jsonObjects = extractJsonObjects(newText)
   let lastIndex = 0
   
+  const validTypes = ['rectangle', 'ellipse', 'diamond', 'text', 'arrow', 'line']
+  
   for (const { json, endIndex } of jsonObjects) {
     try {
       const element = JSON.parse(json) as ParsedElement
       
-      // 只验证 id 是否存在（更新元素只需要 id）
-      // 对于新建元素，还需要 type、x、y，但这由调用方验证
-      if (element.id) {
-        elements.push(element)
+      // 必须有 id
+      if (!element.id) {
+        console.warn('[Parser] 元素缺少 id:', json.slice(0, 50))
+        lastIndex = endIndex
+        continue
       }
-      // 无论解析是否成功，都更新 lastIndex，避免卡住
+      
+      // 如果有 type，必须是有效类型（新建元素）
+      if (element.type && !validTypes.includes(element.type as string)) {
+        console.warn('[Parser] 无效的元素类型:', element.type)
+        lastIndex = endIndex
+        continue
+      }
+      
+      // 新建元素（有 type）需要 x, y
+      if (element.type) {
+        if (typeof element.x !== 'number' || typeof element.y !== 'number') {
+          console.warn('[Parser] 新建元素缺少坐标:', element.id)
+          lastIndex = endIndex
+          continue
+        }
+        
+        // 坐标合理性检查（警告但不拒绝）
+        if (element.x < 0 || element.y < 0 || element.x > 2000 || element.y > 2000) {
+          console.warn('[Parser] 元素坐标可能超出合理范围:', element.id, element.x, element.y)
+        }
+      }
+      
+      elements.push(element)
       lastIndex = endIndex
     } catch {
       // JSON 解析失败，跳过这个对象，继续处理下一个
-      console.warn('Failed to parse element:', json.slice(0, 100))
+      console.warn('[Parser] JSON 解析失败:', json.slice(0, 100))
       lastIndex = endIndex
     }
   }

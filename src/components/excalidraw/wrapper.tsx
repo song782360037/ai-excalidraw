@@ -164,6 +164,81 @@ function getStorageKey(sessionId: string | null, useIndependentCanvas: boolean):
 }
 
 /**
+ * 修复元素的双向绑定关系（boundElements <-> containerId）
+ * @param elements 元素数组
+ * @returns 修复后的元素数组
+ */
+function fixBindingRelationships(elements: ExcalidrawElement[]): ExcalidrawElement[] {
+  const elementMap = new Map<string, ExcalidrawElement>(elements.map(el => [el.id, el]))
+  const result: ExcalidrawElement[] = []
+  
+  // 第一遍：收集所有 containerId 关系（文字 -> 容器）
+  const textToContainer = new Map<string, string>()  // textId -> containerId
+  const containerToTexts = new Map<string, string[]>()  // containerId -> textIds[]
+  
+  for (const el of elements) {
+    // 文字元素有 containerId
+    if (el.containerId && elementMap.has(el.containerId)) {
+      textToContainer.set(el.id, el.containerId)
+      const existing = containerToTexts.get(el.containerId) || []
+      existing.push(el.id)
+      containerToTexts.set(el.containerId, existing)
+    }
+    
+    // 形状元素有 boundElements
+    if (el.boundElements && Array.isArray(el.boundElements)) {
+      for (const bound of el.boundElements) {
+        if (bound.type === 'text' && elementMap.has(bound.id)) {
+          const existing = containerToTexts.get(el.id) || []
+          if (!existing.includes(bound.id)) {
+            existing.push(bound.id)
+          }
+          containerToTexts.set(el.id, existing)
+        }
+      }
+    }
+  }
+  
+  // 第二遍：修复关系
+  for (const el of elements) {
+    let newEl = { ...el }
+    
+    // 如果是容器（有文字绑定到它），确保 boundElements 正确
+    const boundTextIds = containerToTexts.get(el.id)
+    if (boundTextIds && boundTextIds.length > 0) {
+      const existingBounds = (el.boundElements || []).filter(
+        (b: { type: string; id: string }) => b.type !== 'text' || boundTextIds.includes(b.id)
+      )
+      const missingBounds = boundTextIds
+        .filter(textId => !existingBounds.some((b: { id: string }) => b.id === textId))
+        .map(textId => ({ type: 'text', id: textId }))
+      
+      if (missingBounds.length > 0) {
+        newEl = {
+          ...newEl,
+          boundElements: [...existingBounds, ...missingBounds]
+        }
+      }
+    }
+    
+    // 如果是文字且有容器，确保 containerId 正确
+    if (el.type === 'text') {
+      // 检查是否有容器引用了这个文字
+      for (const [containerId, textIds] of containerToTexts.entries()) {
+        if (textIds.includes(el.id) && !el.containerId) {
+          newEl = { ...newEl, containerId }
+          break
+        }
+      }
+    }
+    
+    result.push(newEl)
+  }
+  
+  return result
+}
+
+/**
  * 从 localStorage 加载画布数据
  * @param sessionId 会话 ID
  * @param useIndependentCanvas 是否使用独立画布
@@ -317,6 +392,9 @@ export const ExcalidrawWrapper = forwardRef<ExcalidrawWrapperRef, ExcalidrawWrap
           }))
           updatedElements = [...updatedElements, ...newElementsWithDefaults]
         }
+
+        // 自动修复双向绑定关系
+        updatedElements = fixBindingRelationships(updatedElements)
 
         api.updateScene({
           elements: updatedElements,
@@ -596,7 +674,7 @@ export const ExcalidrawWrapper = forwardRef<ExcalidrawWrapperRef, ExcalidrawWrap
       },
       getCurrentSessionId: () => currentSessionIdRef.current,
       isReady: () => excalidrawAPIRef.current !== null,
-      checkAndFixLayout: (minGap = 20) => {
+      checkAndFixLayout: (minGap = 40) => {
         const api = excalidrawAPIRef.current
         const result: LayoutCheckResult = {
           hasIssues: false,

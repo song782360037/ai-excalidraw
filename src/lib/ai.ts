@@ -471,25 +471,22 @@ async function processChat(
             content: result,
             tool_call_id: tc.id
           })
+          
+          // 输出结构化的工具调用信息
+          let parsedResult: Record<string, unknown> = {}
+          try {
+            parsedResult = JSON.parse(result)
+          } catch {
+            parsedResult = { message: result }
+          }
+          
+          const toolInfo = {
+            name: tc.function.name,
+            args: safeParseArgs(tc.function.arguments),
+            result: parsedResult
+          }
+          onChunk(`<tool_call>${JSON.stringify(toolInfo)}</tool_call>`)
         }
-
-        // 提示用户正在处理（根据工具类型显示不同提示）
-        const toolNames = toolCallsArray.map(tc => tc.function.name)
-        let hint = '正在处理...'
-        if (toolNames.includes('get_canvas_elements')) {
-          hint = '正在分析画布内容...'
-        } else if (toolNames.includes('update_elements')) {
-          hint = '正在更新元素...'
-        } else if (toolNames.includes('move_elements')) {
-          hint = '正在移动元素...'
-        } else if (toolNames.includes('delete_elements')) {
-          hint = '正在删除元素...'
-        }
-        onChunk(`
-
-[${hint}]
-
-`)
 
         // 递归调用继续对话
         await processChat(messages, config, onChunk, onError, toolExecutor, maxToolCalls - 1)
@@ -501,6 +498,17 @@ async function processChat(
     }
   } catch (error) {
     onError?.(error instanceof Error ? error : new Error(String(error)))
+  }
+}
+
+/**
+ * 安全解析工具参数（用于展示）
+ */
+function safeParseArgs(args: string): Record<string, unknown> {
+  try {
+    return JSON.parse(args)
+  } catch {
+    return {}
   }
 }
 

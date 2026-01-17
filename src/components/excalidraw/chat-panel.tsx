@@ -17,7 +17,14 @@ import {
   CheckSquare,
   Brain,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  Wrench,
+  Check,
+  X,
+  Eye,
+  Pencil,
+  Move,
+  LayoutGrid
 } from 'lucide-react'
 import { useChatHistory, type ChatMessage } from './use-chat-history'
 import { parseExcalidrawElements, type ParsedElement } from './element-parser'
@@ -187,6 +194,17 @@ export function ChatPanel({ className, onElementsGenerated, excalidrawRef }: Cha
     const { elements } = parseExcalidrawElements(fullText, processedLength)
     if (elements.length > 0) {
       onElementsGenerated?.(elements)
+    }
+
+    // 自动布局检查和修复（迭代执行，最多3次）
+    if (excalidrawRef?.current) {
+      let iteration = 0
+      const maxIterations = 3
+      while (iteration < maxIterations) {
+        const result = excalidrawRef.current.checkAndFixLayout(40)
+        if (!result.hasIssues || result.fixedCount === 0) break
+        iteration++
+      }
     }
 
     setIsLoading(false)
@@ -512,6 +530,128 @@ function parseThinkingContent(content: string): { thinking: string; main: string
 }
 
 /**
+ * 工具调用信息类型
+ */
+interface ToolCallInfo {
+  name: string
+  args: Record<string, unknown>
+  result: {
+    success?: boolean
+    message?: string
+    error?: string
+    [key: string]: unknown
+  }
+}
+
+/**
+ * 从内容中提取工具调用信息
+ */
+function parseToolCalls(content: string): { toolCalls: ToolCallInfo[]; cleanContent: string } {
+  const toolCalls: ToolCallInfo[] = []
+  const toolCallRegex = /<tool_call>([\s\S]*?)<\/tool_call>/g
+  let match
+  
+  while ((match = toolCallRegex.exec(content)) !== null) {
+    try {
+      const info = JSON.parse(match[1]) as ToolCallInfo
+      toolCalls.push(info)
+    } catch {
+      // 解析失败，跳过
+    }
+  }
+  
+  const cleanContent = content.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
+  return { toolCalls, cleanContent }
+}
+
+/**
+ * 获取工具的中文名称和图标
+ */
+function getToolMeta(name: string): { label: string; icon: React.ReactNode; color: string } {
+  switch (name) {
+    case 'get_canvas_elements':
+      return { label: '获取画布', icon: <Eye className="w-3.5 h-3.5" />, color: 'text-blue-500' }
+    case 'get_elements_by_ids':
+      return { label: '查询元素', icon: <Eye className="w-3.5 h-3.5" />, color: 'text-blue-500' }
+    case 'update_elements':
+      return { label: '更新元素', icon: <Pencil className="w-3.5 h-3.5" />, color: 'text-green-500' }
+    case 'move_elements':
+      return { label: '移动元素', icon: <Move className="w-3.5 h-3.5" />, color: 'text-green-500' }
+    case 'delete_elements':
+      return { label: '删除元素', icon: <Trash2 className="w-3.5 h-3.5" />, color: 'text-red-500' }
+    case 'check_and_fix_layout':
+      return { label: '布局检查', icon: <LayoutGrid className="w-3.5 h-3.5" />, color: 'text-yellow-500' }
+    default:
+      return { label: name, icon: <Wrench className="w-3.5 h-3.5" />, color: 'text-gray-500' }
+  }
+}
+
+/**
+ * 工具调用卡片组件
+ */
+function ToolCallBlock({ info }: { info: ToolCallInfo }) {
+  const [isExpanded, setIsExpanded] = useState(false)
+  const { label, icon, color } = getToolMeta(info.name)
+  const isSuccess = !info.result.error
+  const message = info.result.message || info.result.error || ''
+  
+  return (
+    <div className="my-2 rounded-lg border border-border/50 bg-secondary/20 overflow-hidden">
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="w-full flex items-center gap-2 px-3 py-2 hover:bg-secondary/30 transition-colors"
+      >
+        <span className={cn("flex items-center justify-center", color)}>
+          {icon}
+        </span>
+        <span className="text-xs font-medium flex-1 text-left">{label}</span>
+        <span className={cn(
+          "flex items-center gap-1 text-xs px-1.5 py-0.5 rounded",
+          isSuccess 
+            ? "bg-green-500/10 text-green-600" 
+            : "bg-red-500/10 text-red-600"
+        )}>
+          {isSuccess ? <Check className="w-3 h-3" /> : <X className="w-3 h-3" />}
+          {isSuccess ? '成功' : '失败'}
+        </span>
+        {isExpanded ? (
+          <ChevronUp className="w-3.5 h-3.5 text-foreground/50" />
+        ) : (
+          <ChevronDown className="w-3.5 h-3.5 text-foreground/50" />
+        )}
+      </button>
+      
+      {/* 结果摘要 */}
+      {message && (
+        <div className="px-3 pb-2 text-xs text-foreground/70">
+          {message}
+        </div>
+      )}
+      
+      {/* 展开详情 */}
+      {isExpanded && (
+        <div className="px-3 py-2 border-t border-border/30 bg-secondary/10">
+          {Object.keys(info.args).length > 0 && (
+            <div className="mb-2">
+              <div className="text-[10px] text-foreground/50 mb-1">参数</div>
+              <pre className="text-[10px] font-mono text-foreground/70 whitespace-pre-wrap break-all">
+                {JSON.stringify(info.args, null, 2)}
+              </pre>
+            </div>
+          )}
+          <div>
+            <div className="text-[10px] text-foreground/50 mb-1">结果</div>
+            <pre className="text-[10px] font-mono text-foreground/70 whitespace-pre-wrap break-all max-h-32 overflow-y-auto">
+              {JSON.stringify(info.result, null, 2)}
+            </pre>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
  * 思考内容折叠组件
  */
 function ThinkingBlock({ content }: { content: string }) {
@@ -543,16 +683,20 @@ function ThinkingBlock({ content }: { content: string }) {
 }
 
 /**
- * 助手消息组件 - 隐藏 JSON 元素，显示思考内容和正文，支持 Markdown 渲染
+ * 助手消息组件 - 隐藏 JSON 元素，显示思考内容、工具调用和正文，支持 Markdown 渲染
  */
 function AssistantMessage({ content }: { content: string }) {
-  const { thinking, main } = parseThinkingContent(content)
+  // 先提取工具调用
+  const { toolCalls, cleanContent: contentWithoutTools } = parseToolCalls(content)
+  // 再提取思考内容
+  const { thinking, main } = parseThinkingContent(contentWithoutTools)
+  // 移除 JSON 元素
   const displayContent = removeJsonObjects(main)
   
   // 检查是否正在思考中（有未闭合的 think 标签）
   const isThinking = content.includes('<think>') && !content.includes('</think>')
   
-  if (!displayContent && !thinking) {
+  if (!displayContent && !thinking && toolCalls.length === 0) {
     // 检查原始内容是否包含 JSON 元素
     const hasElements = /"type"\s*:\s*"(rectangle|ellipse|diamond|text|arrow|line)"/.test(content)
     if (hasElements) {
@@ -572,6 +716,9 @@ function AssistantMessage({ content }: { content: string }) {
   return (
     <>
       {thinking && <ThinkingBlock content={thinking} />}
+      {toolCalls.map((tc, idx) => (
+        <ToolCallBlock key={idx} info={tc} />
+      ))}
       {displayContent ? (
         <div className="markdown-content prose prose-sm dark:prose-invert max-w-none">
           <ReactMarkdown 
